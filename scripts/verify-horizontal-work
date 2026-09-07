@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+required=(research/HORIZONTAL_WORK.md deep-work/HORIZONTAL_WORK_MISSION.md)
+for f in "${required[@]}"; do
+  test -s "$f" || { echo "missing required file: $f" >&2; exit 1; }
+done
+
+# LENIENT while the mission is in progress. Once the final report exists, the verifier
+# intentionally becomes strict and requires every primary artifact.
+if [[ -f deep-work/horizontal-work-report.md ]]; then
+  strict_files=(
+    work/spec.md
+    work/adjacent.md
+    work/economic-consumption.md
+    deep-work/horizontal-work-report.md
+  )
+  strict_dirs=(
+    work/fixtures/stint
+    work/fixtures/deploy
+    work/fixtures/akash
+    work/fixtures/lava
+    work/fixtures/composed
+  )
+  for f in "${strict_files[@]}"; do
+    test -s "$f" || { echo "strict: missing artifact: $f" >&2; exit 1; }
+  done
+  for d in "${strict_dirs[@]}"; do
+    test -d "$d" || { echo "strict: missing artifact directory: $d" >&2; exit 1; }
+  done
+  grep -Eq '^HORIZONTAL (PASS|NARROW|FAIL)$' deep-work/horizontal-work-report.md || {
+    echo "horizontal-work report missing allowed verdict" >&2
+    exit 1
+  }
+  echo "horizontal-work verification: STRICT PASS"
+else
+  echo "horizontal-work verification: LENIENT PASS"
+fi
