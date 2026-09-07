@@ -144,6 +144,11 @@ if [ "$STRICT" = 1 ]; then
   else
     fail "missing: deep-work/cp1-report.md"
   fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 scripts/verify-cp1-strict.py || FAIL=1
+  else
+    fail "strict CP1 verification requires python3 for semantic artifact checks"
+  fi
 fi
 
 [ "$FAIL" -eq 0 ] && note "PASS" || note "FAIL"

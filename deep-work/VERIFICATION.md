@@ -11,7 +11,9 @@ for where evidence goes; `scripts/verify-cp1` checks exactly this contract.
   (live-run lesson, Stint `DEEP_WORK.md` §8).
 - **STRICT:** the full CP1 artifact set is required. Activated by the marker file
   `deep-work/state/CP1_STRICT` (created only in VANTA-007) or `STRICT_OVERRIDE=1`
-  (local testing).
+  (local testing). In strict mode, `scripts/verify-cp1` also runs
+  `scripts/verify-cp1-strict.py`, which checks the semantic portions of this
+  contract rather than only file presence and top-level JSON shape.
 
 Budgets: Stint caps mission-level verification at 3 minutes; the script caps each
 implementation's test run at 80 s.
@@ -81,6 +83,15 @@ Required: top-level `records` non-empty; every record has `schema_id`, `author_k
 `references` (list), `commitments` (list). Canonical bytes/IDs may be filled in from
 expA/expB where available; aliases are acceptable when an implementation is not yet
 available (say so in the .md).
+
+Strict mode additionally requires at least seven uniquely identified shared fixtures
+covering the listed edge cases, complete scenario record fields and allowed
+classifications, one output record for every fixture from each implementation, and
+the documented cross-signature directions in `s0/interop.md`. It checks that the
+envelope, rotation convention, findings entries, and final report contain their
+required sections. The final report must name A8/permissionless contribution and
+the recommended next step so an unresolved human gate cannot disappear behind a
+generic READY verdict.
 
 ## Findings and report formats
 
