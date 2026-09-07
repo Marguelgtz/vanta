@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Vanta CP1 — mission-level verification (cumulative).
+#
+# Stint Deep Work runs this command in the worktree after EVERY task attempt and at
+# landing, with a 3-minute cap. It is therefore cumulative:
+#
+#   LENIENT (default)  whatever artifacts EXIST must be valid; artifacts that belong
+#                      to later tasks and do not exist yet are OK. This prevents a
+#                      correctly scoped early task from failing on a later task's
+#                      absence (live-run lesson, Stint DEEP_WORK.md §8).
+#   STRICT             the full CP1 artifact set is required. Activated by the marker
+#                      file deep-work/state/CP1_STRICT (created in VANTA-007) or by
+#                      env STRICT_OVERRIDE=1 (local testing only).
+#
+# Full contract: deep-work/VERIFICATION.md. Each implementation's test run is capped
+# at 80 s so worst-case total stays under the 3-minute verification cap.
+set -u
+cd "$(dirname "$0")/.." || exit 2
+FAIL=0
+note() { printf 'verify: %s\n' "$*"; }
+fail() { printf 'verify: FAIL: %s\n' "$*"; FAIL=1; }
+
+STRICT=0
+[ -f deep-work/state/CP1_STRICT ] && STRICT=1
+[ "${STRICT_OVERRIDE:-0}" = "1" ] && STRICT=1
+note "mode: $([ "$STRICT" = 1 ] && echo STRICT || echo LENIENT)"
+
+nonempty() { [ -f "$1" ] && [ -s "$1" ]; }
+
+# require <path> <what>: strict → missing fails; lenient → missing is tolerated.
+require() {
+  if nonempty "$1"; then
+    note "present: $1"
+  elif [ "$STRICT" = 1 ]; then
+    fail "missing (required for CP1): $1 — $2"
+  fi
+}
+
+# json_valid <file>: 0 valid, 1 invalid, 2 skipped (no validator available)
+json_valid() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$1" >/dev/null 2>&1
+    return $?
+  fi
+  return 2
+}
+
+# scenario_shape_ok <file>: 0 matches contract, 1 violates, 2 skipped (no python3)
+scenario_shape_ok() {
+  command -v python3 >/dev/null 2>&1 || return 2
+  python3 - "$1" >/dev/null 2>&1 <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert isinstance(d, dict) and isinstance(d.get("records"), list) and d["records"], \
+    "top-level 'records' array missing or empty"
+for i, r in enumerate(d["records"]):
+    assert isinstance(r, dict), f"records[{i}] must be an object"
+    for k in ("schema_id", "author_key", "references", "commitments"):
+        assert k in r, f"records[{i}] missing key: {k}"
+    assert isinstance(r["references"], list), f"records[{i}].references must be a list"
+    assert isinstance(r["commitments"], list), f"records[{i}].commitments must be a list"
+PY
+  return $?
+}
+
+# run_exp <expA|expB>: the implementation must ship an executable ./test entrypoint.
+run_exp() {
+  d="s0/$1"
+  if [ -d "$d" ]; then
+    if [ -x "$d/test" ]; then
+      note "running: $d/test (cap 80s)"
+      timeout 80 "$d/test" >/dev/null 2>&1 || fail "$d/test failed or timed out"
+    else
+      fail "$d exists but has no executable ./test entrypoint"
+    fi
+  elif [ "$STRICT" = 1 ]; then
+    fail "missing: $d (implementation $1)"
+  fi
+}
+
+# --- 1. findings log (exists from VANTA-001 onward) -------------------------------
+if [ -e deep-work/findings.md ]; then
+  nonempty deep-work/findings.md || fail "deep-work/findings.md exists but is empty"
+else
+  [ "$STRICT" = 1 ] && fail "missing: deep-work/findings.md"
+fi
+
+# --- 2. S0 spec + shared fixtures ---------------------------------------------------
+require s0/envelope.md "S0 canonical envelope spec"
+if [ -e s0/fixtures/records.json ]; then
+  json_valid s0/fixtures/records.json
+  case $? in
+    0) note "valid JSON: s0/fixtures/records.json" ;;
+    1) fail "s0/fixtures/records.json is not valid JSON" ;;
+    2) note "skipped JSON validation: s0/fixtures/records.json (no python3/node)" ;;
+  esac
+else
+  [ "$STRICT" = 1 ] && fail "missing: s0/fixtures/records.json"
+fi
+
+# --- 3. implementations + interop ---------------------------------------------------
+run_exp expA
+run_exp expB
+if [ "$STRICT" = 1 ]; then
+  [ -f s0/expA/out/records.json ] || fail "missing: s0/expA/out/records.json"
+  [ -f s0/expB/out/records.json ] || fail "missing: s0/expB/out/records.json"
+fi
+if [ -e s0/interop.md ]; then
+  nonempty s0/interop.md || fail "s0/interop.md exists but is empty"
+elif [ "$STRICT" = 1 ]; then
+  fail "missing: s0/interop.md"
+elif [ -d s0/expA ] && [ -d s0/expB ]; then
+  note "note: both implementations exist but s0/interop.md is missing yet (expected before VANTA-003 completes)"
+fi
+
+# --- 4. scenario artifacts -----------------------------------------------------------
+for s in stint deploy; do
+  require "s3/scenario-$s.md" "Scenario paper-walk ($s)"
+  f="s3/scenario-$s.json"
+  if [ -e "$f" ]; then
+    scenario_shape_ok "$f"; c=$?
+    case "$c" in
+      0) note "valid scenario JSON: $f" ;;
+      1) fail "$f does not match the scenario JSON contract (deep-work/VERIFICATION.md)" ;;
+      2) note "skipped shape check: $f (no python3)" ;;
+    esac
+  elif [ "$STRICT" = 1 ]; then
+    fail "missing: $f"
+  fi
+done
+
+# --- 5. S4 key-rotation convention ---------------------------------------------------
+require s4/rotation.md "S4 key-rotation convention"
+
+# --- 6. strict only: CP1 report with a verdict --------------------------------------
+if [ "$STRICT" = 1 ]; then
+  if nonempty deep-work/cp1-report.md; then
+    grep -qE 'READY FOR CP1|READY WITH FINDINGS|NOT READY' deep-work/cp1-report.md \
+      || fail "deep-work/cp1-report.md lacks a verdict (READY FOR CP1 / READY WITH FINDINGS / NOT READY)"
+  else
+    fail "missing: deep-work/cp1-report.md"
+  fi
+fi
+
+[ "$FAIL" -eq 0 ] && note "PASS" || note "FAIL"
+exit "$FAIL"
