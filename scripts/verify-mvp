@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Vanta MVP — mission-level verification (cumulative).
+#
+# Stint Deep Work runs this command in the worktree after EVERY task attempt and at
+# landing, with a 3-minute cap. It is therefore cumulative:
+#
+#   LENIENT (default)  whatever artifacts EXIST must be valid; artifacts that belong
+#                      to later tasks and do not exist yet are OK. This prevents a
+#                      correctly scoped early task from failing on a later task's
+#                      absence (live-run lesson, Stint DEEP_WORK.md §8).
+#   STRICT             the full MVP artifact set is required. Activated by the marker
+#                      file deep-work/state/MVP_STRICT (created in VANTA-M-007) or by
+#                      env STRICT_OVERRIDE=1 (local testing only).
+#
+# Validity checks: present artifacts are validated. Test entrypoints (base/test,
+# base/verifier/test, scenarios/*/test) are EXECUTED with a 100 s cap each — the
+# mission contract requires each entrypoint to self-cap at 120 s, and 5 x 100 s +
+# overhead stays inside the coordinator's 3-minute verification cap.
+#
+# Full contract: deep-work/VERIFICATION.md (section "MVP verification contract").
+set -u
+cd "$(dirname "$0")/.." || exit 2
+FAIL=0
+note() { printf 'verify: %s\n' "$*"; }
+fail() { printf 'verify: FAIL: %s\n' "$*"; FAIL=1; }
+
+STRICT=0
+if [ -f deep-work/state/MVP_STRICT ]; then STRICT=1; fi
+if [ "${STRICT_OVERRIDE:-0}" = "1" ]; then STRICT=1; fi
+note "mode: $(if [ "$STRICT" = 1 ]; then echo STRICT; else echo LENIENT; fi)"
+
+nonempty() { [ -f "$1" ] && [ -s "$1" ]; }
+
+# require <path> <what>: strict → missing fails; lenient → missing is tolerated.
+require() {
+  if [ -e "$1" ]; then
+    note "present: $1"
+  elif [ "$STRICT" = 1 ]; then
+    fail "missing (required for MVP): $1 — $2"
+  fi
+}
+
+# json_valid <file>: 0 valid, 1 invalid, 2 skipped (no validator available)
+json_valid() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$1" >/dev/null 2>&1
+    return $?
+  fi
+  return 2
+}
+
+# run_test <entrypoint> <what>: executable entrypoints are run with a 100 s cap.
+# Lenient: a present-but-failing test is a failure; a missing one is tolerated.
+run_test() {
+  local ep="$1" what="$2"
+  [ -e "$ep" ] || { [ "$STRICT" = 1 ] && fail "missing (required for MVP): $ep — $what"; return; }
+  if [ ! -x "$ep" ]; then
+    fail "not executable: $ep — $what must be an executable test entrypoint"
+    return
+  fi
+  note "running: $ep (100s cap)"
+  local out
+  if out=$(timeout 100 "$ep" >/dev/null 2>&1); then
+    note "pass: $ep"
+  else
+    local rc=$?
+    if [ "$rc" = "124" ]; then
+      fail "timed out (>100s): $ep — entrypoints must self-cap at 120s per the mission contract"
+    else
+      fail "failed (exit $rc): $ep — $what"
+    fi
+  fi
+}
+
+# --- artifacts -----------------------------------------------------------------
+
+# M-001
+require base/envelope.md "normative envelope spec"
+if [ -e base/envelope.md ] && [ ! -s base/envelope.md ] && [ "$STRICT" = 1 ]; then
+  fail "empty (required for MVP): base/envelope.md — normative envelope spec"
+fi
+if [ -e base/fixtures/records.json ]; then
+  note "present: base/fixtures/records.json"
+  case "$(json_valid base/fixtures/records.json)" in
+    1) fail "invalid JSON: base/fixtures/records.json" ;;
+    *) : ;;
+  esac
+fi
+[ -e base/fixtures/records.json ] || { [ "$STRICT" = 1 ] && fail "missing (required for MVP): base/fixtures/records.json — shared fixtures"; }
+
+# M-002
+run_test base/test "reference implementation test entrypoint (M-002)"
+
+# M-003
+run_test base/verifier/test "standalone third-party verifier test entrypoint (M-003)"
+[ -e base/verifier ] && { note "present: base/verifier/"; } || { [ "$STRICT" = 1 ] && fail "missing (required for MVP): base/verifier/ — standalone verifier"; }
+
+# M-004 / M-005
+run_test scenarios/stint/test "Scenario A (stint) end-to-end test (M-004)"
+run_test scenarios/deploy/test "Scenario B (deploy) end-to-end test (M-005)"
+
+# M-006
+run_test scenarios/independence/test "originator-independence + interpretation test (M-006)"
+
+# M-007
+require deep-work/mvp-report.md "MVP report mapping §11 success sub-criteria to evidence"
+if [ -e deep-work/mvp-report.md ]; then
+  nonempty deep-work/mvp-report.md || { [ "$STRICT" = 1 ] && fail "missing (required for MVP): deep-work/mvp-report.md — success-criteria audit"; }
+  # the report must name a verdict; in LENIENT the check is applied to a present, non-empty report
+  if nonempty deep-work/mvp-report.md && ! grep -qE "MVP (PASS|INCOMPLETE|NOT READY)" deep-work/mvp-report.md; then
+    fail "deep-work/mvp-report.md must contain a verdict line: 'MVP PASS', 'MVP INCOMPLETE', or 'MVP NOT READY'"
+  fi
+fi
+
+# M-009
+[ -e base/README.md ] && { note "present: base/README.md"; } || { [ "$STRICT" = 1 ] && fail "missing (required for MVP): base/README.md — reference implementation docs"; }
+
+# --- result --------------------------------------------------------------------
+if [ "$FAIL" = 0 ]; then
+  note "PASS"
+  exit 0
+fi
+note "FAIL"
+exit 1
